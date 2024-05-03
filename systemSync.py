@@ -71,8 +71,16 @@ class system_sync_output:
 ##########################################################################
 if __name__ == "__main__" :
 
+    if 0 != os.getuid():
+        print( 'root 以外では動作しません。', file=sys.stderr )
+        exit( 1 )
+     
     sys_sync_out = system_sync_output()
 
+    if not sys_sync_out.sys_sync.isMaster():
+        print( 'Master マシン以外では動作しません。', file=sys.stderr )
+        exit( 1 )
+     
     args = sys.argv
     if 1 < len( args ):
         ##########################################################################
@@ -133,6 +141,7 @@ if __name__ == "__main__" :
     comPair['6'] = 'initializeMachine'
     comPair['7'] = 'restRsyncDateMachine'
     comPair['8'] = 'restPackageInitialized'
+    comPair['9'] = 'restDatabaseSlaveSetup'
 
     prompt = '選択してください ('
     for key in comPair.keys():
@@ -144,6 +153,32 @@ if __name__ == "__main__" :
     while command not in [ 'q', 'quit', 'exit', 'end' ]:
         ##########################################################################
         command = input( prompt ).strip().lower()
+        ##########################################################################
+        if command == '9': ### restDatabaseSlaveSetup
+            ##########################################################################
+            allMachineInfo = sys_sync_out.sys_sync.getAllMachineInfo()
+            allMachines = []
+            for row in allMachineInfo:
+                allMachines.append( row['name'] )
+            ##########################################################################
+            name = sys_sync_out.inputList( allMachines, 'マシン名を入力してください : ' )
+            if name not in allMachines:
+                print( '不正なマシン名が指定されました。', file=sys.stderr )
+                exit( 1 )
+            ##########################################################################
+            machine = {}
+            machine_id = -1
+            for machine in allMachineInfo:
+                if name == machine['name']:
+                    machine_id = machine['machine_id']
+                    break
+            ##########################################################################
+            if sys_sync_out.sys_sync.setupDatabaseSlave( machine_id ):
+                print( '成功しました。' )
+                exit( 0 )
+            else:
+                print( 'データベースのセットアップに失敗しました。', file=sys.stderr )
+                exit( 1 )
         ##########################################################################
         if command == '8': ### resetRsyncDateMachine
             ##########################################################################

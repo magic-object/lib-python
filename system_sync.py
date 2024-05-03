@@ -58,8 +58,8 @@ class system_sync:
     ##########################################################################
     expectTimeout = 180
     ##########################################################################
-    passwordRegexpStr = '''((パスワード)|([Pp]assword))\s*:\s*'''
-    sshKeyRegExpStr = '''[Yy]es/[Nn]o[^\?]+\?'''
+    passwordRegexpStr = r'((パスワード)|([Pp]assword))\s*:\s*'
+    sshKeyRegExpStr = r'[Yy]es/[Nn]o[^\?]+\?'
     ##########################################################################
     isMasterSQL = "select count(*) as isMaster from machine where type = 'master' and name = %(host)s"
     isSlaveSQL = "select count(*) as isSlave from machine where type = 'slave' and name = %(host)s"
@@ -917,7 +917,7 @@ class system_sync:
         if type(sub_data) is not dict:
             raise TypeError(f'sub_data ({sub_data}) が有効ではではありません。')
             ##########################################################################
-        patternStr = re.escape('{') + '''(\w+)''' + re.escape('}')
+        patternStr = re.escape('{') + r'(\w+)' + re.escape('}')
         pattern = re.compile(patternStr)
         ##########################################################################
         args = {}
@@ -1720,50 +1720,7 @@ class system_sync:
         ##########################################################################
         if package['unit_name'] in ('mariadb', 'mysqld') and targetMachine[
             'type'].lower() == 'slave' and self.isMaster():
-            ##########################################################################
-            # データベースのダンプ SQL ファイルの作成
-            # dump to system_sync.databaseDumpPath
-            ##########################################################################
-            result = self.dumpDatabase(machine_id) and result
-            if result:
-                result = self.scp(machine_id, system_sync.databaseDumpPath, system_sync.databaseDumpPath)
-            ##########################################################################
-            # データベースのセットアップ用SQL取得
-            ##########################################################################
-            setupSqlList = self.getUnitText(machine_id=machine_id, unit=package['unit_name'], is_database_setup=True)
-            setupSql = None
-            for setupSql in setupSqlList:
-                pass
-            if setupSql is None:
-                raise KeyError(f'({str(self.machineInfo)}) {package["unit_name"]} データベースセットアップSQLが見つかりません。')
-            result = self.writeToFile(setupSqlList) and result
-
-            ##########################################################################
-            # データベースのセットアップ用SQL実行コマンド取得
-            ##########################################################################
-            self.cursor.execute(system_sync.slaveSetupDatabaseSQL,
-                                {'unit_name': package['unit_name'], 'machine_id': machine_id})
-            slaveSetupCommandList = self.cursor.fetchall()
-            for slaveSetupCommand in slaveSetupCommandList:
-                slaveSetupCommand['allow_error'] = bool(slaveSetupCommand['allow_error'])
-                ##########################################################################
-                # SQL ファイル使用コマンドのみ許可
-                ##########################################################################
-                if '{sql_file}' not in slaveSetupCommand['command']:
-                    continue
-                if slaveSetupCommand['allow_error']:
-                    ##########################################################################
-                    # セットアップSQLはエラーを許可
-                    ##########################################################################
-                    result = self.doCommand(machine_id, slaveSetupCommand, dict(self.config['sql']),
-                                            {'sql_file': setupSql['path']}) and result
-                else:
-                    ##########################################################################
-                    # SQL ダンプ＆スレイブ設定
-                    ##########################################################################
-                    result = self.doCommand(machine_id, slaveSetupCommand, dict(self.config['sql']),
-                                            {'sql_file': system_sync.databaseDumpPath}) and result
-        ##########################################################################
+            result = self.setupDatabaseSlave( machine_id, unit=package['unit_name'])
         return result
 
     ##########################################################################
@@ -2569,6 +2526,80 @@ class system_sync:
         for row in self.cursor.fetchall():
             rows.append(row['unit_name'])
         return rows
+    ##########################################################################
+    def setupDatabaseSlave(self, machine_id, unit = 'mariadb'):
+        """データベースのスレイブセットアップを行います。"""
+        ##########################################################################
+        if unit not in ('mariadb', 'mysqld'):
+            return False
+        ##########################################################################
+        if not self.isMaster():
+            return False
+        ##########################################################################
+        self.getAllMachineInfo()
+        ##########################################################################
+        # 対象マシン情報の取得
+        ##########################################################################
+        targetMachine = None
+        for targetMachine in self.allMachineInfo:
+            if targetMachine['id'] == machine_id:
+                break
+        if targetMachine is None:
+            raise KeyError(f'machine_id ({machine_id}) の値が正しくありません。')
+        ##########################################################################
+        if targetMachine['type'].lower() != 'slave':
+            raise KeyError(f'machine_id ({machine_id}) の値が正しくありません。')
+        ##########################################################################
+        # データベースのダンプ SQL ファイルの作成
+        # dump to system_sync.databaseDumpPath
+        ##########################################################################
+        result = self.dumpDatabase(machine_id)
+        if not result:
+            return False
+        ##########################################################################
+        # ダンプファイルをスレイブにコピー
+        ##########################################################################
+        result = self.scp(machine_id, system_sync.databaseDumpPath, system_sync.databaseDumpPath)
+        if not result:
+            return False
+        ##########################################################################
+        # データベースのセットアップ用SQL取得
+        ##########################################################################
+        setupSqlList = self.getUnitText(machine_id=machine_id, unit=unit, is_database_setup=True)
+        setupSql = None
+        for setupSql in setupSqlList:
+            pass
+        if setupSql is None:
+            raise KeyError(f'({str(self.machineInfo)}) {unit} データベースセットアップSQLが見つかりません。')
+        result = self.writeToFile(setupSqlList) and result
+
+        ##########################################################################
+        # データベースのセットアップ用SQL実行コマンド取得
+        ##########################################################################
+        self.cursor.execute(system_sync.slaveSetupDatabaseSQL,
+                            {'unit_name': unit, 'machine_id': machine_id})
+        slaveSetupCommandList = self.cursor.fetchall()
+        for slaveSetupCommand in slaveSetupCommandList:
+            slaveSetupCommand['allow_error'] = bool(slaveSetupCommand['allow_error'])
+            ##########################################################################
+            # SQL ファイル使用コマンドのみ許可
+            ##########################################################################
+            if '{sql_file}' not in slaveSetupCommand['command']:
+                continue
+            if slaveSetupCommand['allow_error']:
+                ##########################################################################
+                # セットアップSQLはエラーを許可
+                ##########################################################################
+                result = self.doCommand(machine_id, slaveSetupCommand, dict(self.config['sql']),
+                                        {'sql_file': setupSql['path']}) and result
+            else:
+                ##########################################################################
+                # SQL ダンプ＆スレイブ設定
+                ##########################################################################
+                result = self.doCommand(machine_id, slaveSetupCommand, dict(self.config['sql']),
+                                        {'sql_file': system_sync.databaseDumpPath}) and result
+            ##########################################################################
+        return result
     ##########################################################################
 
 
